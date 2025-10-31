@@ -22,8 +22,10 @@ import io.circe._
 import io.circe.syntax._
 import io.circe.CursorOp._
 import io.circe.parser._
+
 import java.io.{ BufferedOutputStream, BufferedReader, StringReader }
-import uk.gov.hmrc.gform.sharedmodel.formtemplate.Constant
+import uk.gov.hmrc.gform.sharedmodel.formtemplate.{ Constant, Coordinates, SectionNumber, TaskNumber, TaskSectionNumber, TemplateSectionIndex }
+import uk.gov.hmrc.gform.translation.TextExtractor.sections
 
 case class Lang(en: String, cy: String)
 
@@ -278,6 +280,88 @@ class Translator(json: Json, paths: List[List[Instruction]], val topLevelExprDat
         }.root
       }
 
+  private def getSectionNumber(hCursor: HCursor, aCursor: ACursor): Option[SectionNumber] = {
+
+    val history = aCursor.history
+
+    def getValueAndIndexFromIndex(i: Int, value: Option[String]) = {
+
+      def result = {
+        var sectionIndex = 0
+        val sectionForward = history
+          .take(i)
+          .reverse
+          .takeWhile {
+            case MoveRight =>
+              sectionIndex = sectionIndex + 1
+              true
+            case DownArray => true
+            case _         => false
+          }
+          .reverse
+
+        val sectionToStart = history.drop(i)
+
+        val opsToType = value.map(value => (DownField(value) +: sectionForward) ++ sectionToStart)
+        opsToType.map(opsToType => hCursor.replay(opsToType).as[String]) -> sectionIndex
+      }
+
+      if (i == -1) {
+        None
+      } else {
+        Some(result)
+      }
+    }
+
+    def isAddToList(value: Decoder.Result[String]) = value match {
+      case Right("addToList") => true
+      case _                  => false
+    }
+
+    val classicSectionIndex = history.lastIndexOf(DownField("sections"))
+    val classic = {
+      val sectionTypeAndSectionIndex = getValueAndIndexFromIndex(classicSectionIndex, Some("type"))
+      sectionTypeAndSectionIndex.map {
+        case (Some(sectionType), sectionIndex) =>
+          if (isAddToList(sectionType)) {
+            val pageNumber = getValueAndIndexFromIndex(history.indexOf(DownField("pages")), None)
+            pageNumber match {
+              case Some((None, pageNumber)) =>
+                SectionNumber.Classic.AddToListPage.Page(TemplateSectionIndex(sectionIndex), 0, pageNumber)
+              case _ => throw new RuntimeException("Page number not available")
+            }
+          } else {
+            SectionNumber.Classic.NormalPage(
+              TemplateSectionIndex(sectionIndex)
+            )
+          }
+        case value => throw new RuntimeException(s"Section type not found [$value]")
+      }
+    }
+
+    val sectionNumber =
+      classic.map { classic =>
+        val taskListSectionIndex = history.indexOf(DownField("sections"))
+        if (taskListSectionIndex == classicSectionIndex) {
+          classic
+        } else {
+          getValueAndIndexFromIndex(taskListSectionIndex, None) -> getValueAndIndexFromIndex(
+            history.indexOf(DownField("tasks")),
+            None
+          ) match {
+            case (Some((None, taskSectionNumber)), Some((None, taskNumber))) =>
+              val coordinates = Coordinates(TaskSectionNumber(taskSectionNumber), TaskNumber(taskNumber))
+              SectionNumber.TaskList(coordinates, classic)
+            case value => throw new RuntimeException(s"Task section number or task number not available [$value]")
+          }
+        }
+      }
+
+    println(sectionNumber)
+    sectionNumber.foreach(sectionNumber => println(sectionNumber.value))
+    sectionNumber
+  }
+
   private def smartStringsRows(cursors: List[HCursor => ACursor]): List[Row] = {
     val rows = scala.collection.mutable.ListBuffer[Row]()
     cursors
@@ -286,6 +370,7 @@ class Translator(json: Json, paths: List[List[Instruction]], val topLevelExprDat
         val attemptLang = aCursor.as[Lang]
         val attemptString = aCursor.as[String]
         val path = CursorOp.opsToPath(aCursor.history)
+        getSectionNumber(json.hcursor, aCursor)
         attemptString
           .map { en =>
             rows.addOne(Row(path, en, ""))

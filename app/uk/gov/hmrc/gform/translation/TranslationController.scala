@@ -181,8 +181,9 @@ class TranslationController(
     val workbookTry = Try {
       val workBook = new XSSFWorkbook()
       val sheet = workBook.createSheet("translations")
-      sheet.setColumnWidth(0, 100 * 256)
-      sheet.setColumnWidth(1, 100 * 256)
+      rows.head.indices.foreach { i =>
+        sheet.setColumnWidth(i, 100 * 256)
+      }
       val style = workBook.createCellStyle()
       style.setWrapText(true)
 
@@ -196,7 +197,6 @@ class TranslationController(
       }
 
       rows.zipWithIndex.foreach { case (values, idx) => processRow(values, idx) }
-      sheet.autoSizeColumn(2)
 
       val byteArrayOutputStream = new ByteArrayOutputStream()
       workBook.write(byteArrayOutputStream)
